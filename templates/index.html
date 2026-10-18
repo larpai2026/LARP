@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>larp — персональный ИИ</title>
+<style>
+:root { color-scheme: dark; --bg:#0b1020; --panel:#141b2d; --muted:#9aa8c0; --line:#27324a; --accent:#8b5cf6; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:#edf2ff; font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:16px 22px; border-bottom:1px solid var(--line); background:#0e1526; position:sticky; top:0; }
+.brand-wrap { display:flex; flex-direction:column; gap:3px; }
+.brand-logo { display:block; width:100px; height:40px; object-fit:cover; object-position:center; border-radius:4px; }
+small,.muted { color:var(--muted); }
+.layout { max-width:1000px; margin:0 auto; padding:24px 16px 160px; }
+.notice { border:1px solid var(--line); background:var(--panel); border-radius:12px; padding:14px 16px; color:#cbd5e1; font-size:14px; }
+.messages { display:flex; flex-direction:column; gap:16px; margin-top:22px; }
+.message { border:1px solid var(--line); border-radius:14px; padding:15px 17px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.message.user { background:#1b2440; margin-left:9%; }
+.message.assistant { background:var(--panel); margin-right:4%; }
+.role { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#a78bfa; font-weight:700; margin-bottom:6px; }
+.message pre { overflow:auto; background:#080d18; padding:12px; border-radius:8px; }
+.composer-wrap { position:fixed; bottom:0; left:0; right:0; padding:16px; background:linear-gradient(transparent,var(--bg) 18%); }
+.composer { max-width:1000px; margin:auto; background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:12px; box-shadow:0 12px 50px #0005; }
+textarea,input,button { font:inherit; }
+textarea { width:100%; min-height:72px; max-height:220px; resize:vertical; background:transparent; color:#fff; border:0; outline:none; padding:8px; }
+.controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding-top:8px; border-top:1px solid var(--line); }
+button,.file-label { border:1px solid var(--line); border-radius:9px; padding:9px 13px; color:#edf2ff; background:#202a41; cursor:pointer; }
+button.primary { background:var(--accent); border-color:var(--accent); font-weight:700; }
+button:disabled { opacity:.5; cursor:wait; }
+.file-label input { display:none; }
+#status { margin-left:auto; color:var(--muted); font-size:13px; }
+.image-result img { max-width:100%; max-height:500px; border-radius:12px; display:block; margin-top:10px; }
+#attachment { font-size:13px; color:#c4b5fd; padding:5px 8px; }
+@media(max-width:600px) { header { padding:12px 15px; } .layout { padding:15px 10px 190px; } .message.user { margin-left:3%; } .message.assistant { margin-right:1%; } #status { width:100%; margin-left:0; } }
+</style>
+<link rel="icon" type="image/png" href="/static/larp-logo.png">
+</head>
+<body>
+<header>
+  <div class="brand-wrap"><img class="brand-logo" src="/static/larp-logo.png" alt="larp"><small>Твой персональный ИИ</small></div>
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><small>{{ user['email'] }}</small><button id="newChat" type="button">Новый чат</button><form method="post" action="/logout" style="margin:0"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Выйти</button></form></div>
+</header>
+<main class="layout">
+  <div class="notice">История хранится в локальной базе этого приложения. Сообщения и текст файлов отправляются облачной модели для обработки. Не вставляй пароли, приватные ключи или seed-фразы.</div>
+  <div id="messages" class="messages"></div>
+</main>
+<div class="composer-wrap">
+  <div class="composer">
+    <textarea id="message" placeholder="Напиши сообщение… (Enter — отправить, Shift+Enter — новая строка)"></textarea>
+    <div id="attachment"></div>
+    <div class="controls">
+      <label class="file-label">Прикрепить файл<input id="file" type="file" accept=".txt,.md,.pdf,.docx,.csv,.json,.py"></label>
+      <button id="imageBtn" type="button">Создать изображение</button>
+      <button id="send" class="primary" type="button">Отправить ↑</button>
+      <span id="status">Готов</span>
+    </div>
+  </div>
+</div>
+<script>
+const messagesEl = document.getElementById('messages');
+const input = document.getElementById('message');
+const statusEl = document.getElementById('status');
+const sendBtn = document.getElementById('send');
+const fileInput = document.getElementById('file');
+const attachmentEl = document.getElementById('attachment');
+let conversationId = localStorage.getItem('larp_conversation_id') || crypto.randomUUID();
+localStorage.setItem('larp_conversation_id', conversationId);
+let attachmentText = '';
+let attachmentName = '';
+
+function addMessage(role, content, imageUrl=null) {
+  const box = document.createElement('div');
+  box.className = 'message ' + role;
+  const label = document.createElement('div');
+  label.className = 'role';
+  label.textContent = role === 'user' ? 'Ты' : 'larp';
+  const body = document.createElement('div');
+  body.textContent = content;
+  box.append(label, body);
+  if (imageUrl) {
+    const wrap = document.createElement('div');
+    wrap.className = 'image-result';
+    const img = document.createElement('img');
+    img.src = imageUrl;
+    img.alt = 'Сгенерированное изображение';
+    wrap.appendChild(img);
+    box.appendChild(wrap);
+  }
+  messagesEl.appendChild(box);
+  window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
+}
+async function loadHistory() {
+  try {
+    const res = await fetch('/api/history/' + encodeURIComponent(conversationId));
+    const data = await res.json();
+    if (data.messages.length) data.messages.forEach(m => addMessage(m.role, m.content));
+    else addMessage('assistant', 'Привет! Я larp. Могу помогать с Python, анализировать загруженные документы и создавать изображения. Что сделаем?');
+  } catch { addMessage('assistant', 'Привет! Я larp. Напиши сообщение, чтобы начать.'); }
+}
+async function sendMessage() {
+  let text = input.value.trim();
+  if (attachmentText) {
+    text += `\\n\\n[Текст из файла: ${attachmentName}]\\n${attachmentText}`;
+  }
+  if (!text) return;
+  const visibleText = input.value.trim() + (attachmentName ? `\\n📎 ${attachmentName}` : '');
+  addMessage('user', visibleText);
+  input.value = '';
+  attachmentText = ''; attachmentName = ''; attachmentEl.textContent = '';
+  sendBtn.disabled = true; statusEl.textContent = 'Думаю…';
+  try {
+    const res = await fetch('/api/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({conversation_id:conversationId, message:text})
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Ошибка запроса');
+    addMessage('assistant', data.answer);
+  } catch (err) { addMessage('assistant', 'Ошибка: ' + err.message); }
+  finally { sendBtn.disabled = false; statusEl.textContent = 'Готов'; input.focus(); }
+}
+sendBtn.addEventListener('click', sendMessage);
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+fileInput.addEventListener('change', async () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  statusEl.textContent = 'Читаю файл…';
+  const form = new FormData(); form.append('file', file);
+  try {
+    const res = await fetch('/api/upload', {method:'POST', body:form});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Не удалось прочитать файл');
+    attachmentText = data.text; attachmentName = data.filename;
+    attachmentEl.textContent = `Прикреплён: ${attachmentName}${data.truncated ? ' (текст сокращён)' : ''}`;
+  } catch (err) { attachmentEl.textContent = 'Ошибка: ' + err.message; }
+  finally { statusEl.textContent = 'Готов'; fileInput.value = ''; }
+});
+document.getElementById('imageBtn').addEventListener('click', async () => {
+  const prompt = input.value.trim();
+  if (!prompt) { statusEl.textContent = 'Сначала опиши изображение в поле сообщения.'; return; }
+  statusEl.textContent = 'Создаю изображение…';
+  document.getElementById('imageBtn').disabled = true;
+  try {
+    const res = await fetch('/api/image', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({prompt})
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Ошибка генерации');
+    addMessage('user', 'Создай изображение: ' + prompt);
+    addMessage('assistant', 'Готово — изображение создано.', data.url);
+    input.value = '';
+  } catch (err) { addMessage('assistant', 'Ошибка генерации: ' + err.message); }
+  finally { statusEl.textContent = 'Готов'; document.getElementById('imageBtn').disabled = false; }
+});
+document.getElementById('newChat').addEventListener('click', () => {
+  conversationId = crypto.randomUUID();
+  localStorage.setItem('larp_conversation_id', conversationId);
+  messagesEl.replaceChildren();
+  addMessage('assistant', 'Новый чат начат. Чем могу помочь?');
+});
+loadHistory();
+</script>
+</body>
+</html>
